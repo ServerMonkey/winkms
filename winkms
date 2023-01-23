@@ -1,0 +1,73 @@
+#!/bin/sh
+# shellcheck disable=SC2129
+
+# parse arguments
+if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    man winkms.1 || ronn -r <README.md | man -l -
+    exit
+fi
+
+ACTION="$1"
+
+KEY_URL="https://web.archive.org/web/20220912125511/https://docs.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys"
+PATH_CFG="$HOME/.winkms"
+FILE_KEYS="$PATH_CFG/keys.html"
+
+mkdir -p "$PATH_CFG"
+
+# find keys
+if [ "$ACTION" = "find" ]; then
+    # auto download if missing
+    if [ ! -f "$FILE_KEYS" ]; then
+        winkms update || exit 1
+    fi
+
+    # verify input
+    if [ -z "$2" ]; then
+        echo "You need to specify a search string, for example '7 pro'"
+        exit 1
+    fi
+
+    # find keys
+    grep <"$FILE_KEYS" "<td>" | grep -iA 1 "$2" | sed 's|<br/>| / |g' |
+        sed -e 's/<[^>]*>//g'
+
+# download and format HTML from MS website
+elif [ "$ACTION" = "update" ]; then
+    # use custom URL
+    if [ -n "$2" ]; then
+        KEY_URL="$2"
+    else
+        echo "Updating key list via archive.org"
+    fi
+
+    # get key data
+    DATA_KEYS=$(curl -sL "$KEY_URL" |
+        grep -A 1000 "Generic Volume License Keys" |
+        grep -B 1000 "</table>")
+
+    # verify data
+    if [ -z "$DATA_KEYS" ]; then
+        echo "Failed, URL does not contain any key data"
+        exit 1
+    fi
+
+    # save file
+    echo '<!DOCTYPE html>' >"$FILE_KEYS"
+    echo '<html>' >>"$FILE_KEYS"
+    echo '<body>' >>"$FILE_KEYS"
+    echo "$DATA_KEYS" >>"$FILE_KEYS"
+    echo '</body>' >>"$FILE_KEYS"
+    echo '</html>' >>"$FILE_KEYS"
+
+    echo "Key data saved"
+
+# browse
+elif [ "$ACTION" = "browse" ]; then
+    xdg-open "$FILE_KEYS"
+
+# abort
+else
+    echo "Unknown action"
+    exit 1
+fi
