@@ -1,5 +1,8 @@
 #!/bin/sh
 # shellcheck disable=SC2129
+# shellcheck disable=SC2039
+
+set -e
 
 # parse arguments
 if [ -z "$1" ] || [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
@@ -9,18 +12,103 @@ fi
 
 ACTION="$1"
 
-KEY_URL="https://web.archive.org/web/20220912125511/https://docs.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys"
+KEY_URL_DEFAULT="https://web.archive.org/web/20230314171214/https://www.windowsafg.com/keys.html"
+KEY_URL_KMS="https://web.archive.org/web/20220912125511/https://docs.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys"
+KEY_URL_MISC=""
+
 PATH_CFG="$HOME/.winkms"
-FILE_KEYS="$PATH_CFG/keys.html"
+KEYS_DEFAULT="$PATH_CFG/default.htm"
+KEYS_KMS="$PATH_CFG/kms.htm"
+KEYS_MISC="$PATH_CFG/misc.txt"
+
+error() {
+    echo "Error: $1"
+    exit 1
+}
+
+download_keys() {
+    local URL="$1"
+    local DATA
+    local NEW_DATA
+
+    if [ "$URL" = "" ]; then
+        return 0
+    fi
+
+    # get key data
+    AGENT_A="Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    AGENT_B="AppleWebKit/537.36 (KHTML, like Gecko)"
+    AGENT_C="Chrome/103.0.0.0 Safari/537.36"
+    AGENT="$AGENT_A $AGENT_B $AGENT_C"
+    DATA=$(curl --connect-timeout 15 -A "$AGENT" -sL "$URL") ||
+        error "Failed to download data from $URL"
+    [ -n "$DATA" ] || error "Failed to download data from $URL"
+
+    # parse data
+    if echo "$URL" | grep -F "windowsafg.com/" >/dev/null; then
+        echo "Downloading Default keys from windowsafg.com like site"
+        NEW_DATA=$(echo "$DATA" |
+            grep -A 1000 "<table width=\"100%\">" |
+            grep -B 1000 "</table>" |
+            awk '{$1=$1;print}' |
+            sed 's| width="55%"||g' |
+            sed 's|<table width=\"100%\">|<table width=\"50%\">|g' |
+            sed 's|;||g')
+        [ -n "$NEW_DATA" ] || error "Failed to parse data from $URL"
+        echo '<!DOCTYPE html>' >"$KEYS_DEFAULT"
+        echo '<html>' >>"$KEYS_DEFAULT"
+        echo '<body>' >>"$KEYS_DEFAULT"
+        echo '<h1>Default Generic Installation Keys</h1>' >>"$KEYS_DEFAULT"
+        echo '<table>' >>"$KEYS_DEFAULT"
+        echo "$NEW_DATA" >>"$KEYS_DEFAULT"
+        echo '</table>' >>"$KEYS_DEFAULT"
+        echo '</body>' >>"$KEYS_DEFAULT"
+        echo '</html>' >>"$KEYS_DEFAULT"
+
+    elif echo "$URL" | grep -F "microsoft.com/" >/dev/null; then
+        echo "Downloading KMS keys from microsoft.com like site"
+        NEW_DATA=$(echo "$DATA" |
+            grep -A 1000 "Generic Volume License Keys" |
+            grep -B 1000 "</table>" |
+            awk '{$1=$1;print}')
+        [ -n "$NEW_DATA" ] || error "Failed to parse data from $URL"
+        echo '<!DOCTYPE html>' >"$KEYS_KMS"
+        echo '<html>' >>"$KEYS_KMS"
+        echo '<body>' >>"$KEYS_KMS"
+        echo "$NEW_DATA" >>"$KEYS_KMS"
+        echo '</body>' >>"$KEYS_KMS"
+        echo '</html>' >>"$KEYS_KMS"
+
+    else
+        echo "Downloading Misc keys from .txt based site"
+        echo "$DATA" >"$KEYS_MISC"
+    fi
+
+}
+
+search_in_file() {
+    local FILE="$1"
+    local SEARCH="$2"
+    local BANNER="$3"
+
+    [ -f "$FILE" ] || return 0
+
+    echo "######### $BANNER #########"
+    grep <"$FILE" "<td>" | grep -iA 1 "$SEARCH" | sed 's|<br/>| / |g' |
+        sed -e 's/<[^>]*>//g' | sed 's|--||g' | sed '/^ *$/d'
+    echo ""
+}
+
+### MAIN ######################################################################
 
 mkdir -p "$PATH_CFG"
 
 # find keys
 if [ "$ACTION" = "find" ]; then
     # auto download if missing
-    if [ ! -f "$FILE_KEYS" ]; then
-        winkms update || exit 1
-    fi
+    [ -f "$KEYS_DEFAULT" ] || download_keys "$KEY_URL_DEFAULT"
+    [ -f "$KEYS_KMS" ] || download_keys "$KEY_URL_KMS"
+    [ -f "$KEYS_MISC" ] || download_keys "$KEY_URL_MISC"
 
     # verify input
     if [ -z "$2" ]; then
@@ -28,43 +116,29 @@ if [ "$ACTION" = "find" ]; then
         exit 1
     fi
 
-    # find keys
-    grep <"$FILE_KEYS" "<td>" | grep -iA 1 "$2" | sed 's|<br/>| / |g' |
-        sed -e 's/<[^>]*>//g'
+    search_in_file "$KEYS_DEFAULT" "$2" "Default Keys"
+    search_in_file "$KEYS_KMS" "$2" "GVLK and KMS Keys"
+    search_in_file "$KEYS_MISC" "$2" "Misc Keys"
 
-# download and format HTML from MS website
+# download and update keys
 elif [ "$ACTION" = "update" ]; then
     # use custom URL
     if [ -n "$2" ]; then
-        KEY_URL="$2"
+        download_keys "$2"
+        exit 0
     else
-        echo "Updating key list via archive.org"
+        echo "Using archive.org"
     fi
 
-    # get key data
-    DATA_KEYS=$(curl -sL "$KEY_URL" |
-        grep -A 1000 "Generic Volume License Keys" |
-        grep -B 1000 "</table>")
-
-    # verify data
-    if [ -z "$DATA_KEYS" ]; then
-        echo "Failed, URL does not contain any key data"
-        exit 1
-    fi
-
-    # save file
-    echo '<!DOCTYPE html>' >"$FILE_KEYS"
-    echo '<html>' >>"$FILE_KEYS"
-    echo '<body>' >>"$FILE_KEYS"
-    echo "$DATA_KEYS" >>"$FILE_KEYS"
-    echo '</body>' >>"$FILE_KEYS"
-    echo '</html>' >>"$FILE_KEYS"
-
-    echo "Key data saved"
+    download_keys "$KEY_URL_DEFAULT"
+    download_keys "$KEY_URL_KMS"
+    download_keys "$KEY_URL_MISC"
 
 # browse
 elif [ "$ACTION" = "browse" ]; then
-    xdg-open "$FILE_KEYS"
+    [ -f "$KEYS_DEFAULT" ] && sensible-browser "$KEYS_DEFAULT"
+    [ -f "$KEYS_KMS" ] && sensible-browser "$KEYS_KMS"
+    [ -f "$KEYS_MISC" ] && sensible-browser "$KEYS_MISC"
 
 # abort
 else
